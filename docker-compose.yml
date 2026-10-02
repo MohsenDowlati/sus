@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  db:
+    image: mongo:8
+    container_name: shorts-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: Mohsen_Dowlati
+      MONGO_INITDB_ROOT_PASSWORD: I_wanna_use_a_weak_password_for_this
+    volumes:
+      - ./.database/:/data/db/
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - url-shortener
+
+  cache:
+    image: redis:7.4-alpine
+    container_name: shorts-redis
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - url-shortener
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    restart: unless-stopped
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger Web UI
+      - "4317:4317"   # OpenTelemetry gRPC receiver
+      - "4318:4318"   # OpenTelemetry HTTP receiver
+      - "14268:14268" # Jaeger HTTP collector (legacy)
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - url-shortener
+
+  prometheus:
+    image: prom/prometheus:v2.53.3
+    container_name: shorts-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./Docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    networks:
+      - url-shortener
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: shorts-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=Mohsen_Dowlati
+      - GF_SECURITY_ADMIN_PASSWORD=Weaved_poems_for_m
+    volumes:
+      - ./Docker/datasource.yml:/etc/Docker/provisioning/datasources/datasource.yml:ro
+    depends_on:
+      - prometheus
+      - jaeger
+    networks:
+      - url-shortener
+
+volumes:
+  prom_data:
+
+networks:
+  url-shortener:
+    driver: bridge

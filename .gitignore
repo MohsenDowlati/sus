@@ -1,0 +1,14 @@
+# Secrets / local config
+.env
+
+# MongoDB data volume (mounted by docker-compose "db" service)
+.database/
+
+# Build output
+/shorts
+/shorts.exe
+*.exe
+
+# Go test/coverage artifacts
+*.out
+coverage.*
