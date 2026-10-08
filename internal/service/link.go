@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/MohsenDowlati/shorts/internal/domain"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -22,11 +24,20 @@ var (
 	ErrLinkUnavailable  = errors.New("link is disabled or expired")
 )
 
-const maxAutoSlugAttempts = 3
+const (
+	maxAutoSlugAttempts = 3
+	negativeCacheTTL    = 60 * time.Second
+	defaultLinkCacheTTL = 15 * time.Minute
+)
 
 type LinkStore interface {
 	Create(context.Context, *domain.Link) error
 	GetByCode(context.Context, string) (*domain.Link, error)
+}
+
+type LinkCache interface {
+	Get(context.Context, string) (value string, found bool, err error)
+	Set(context.Context, string, string, time.Duration) error
 }
 
 type CreateLinkParams struct {
@@ -42,9 +53,16 @@ type LinkService struct {
 	logger       *slog.Logger
 	timeout      time.Duration
 	generateSlug func() (string, error)
+	cache        LinkCache
+	cacheTTL     time.Duration
+	lookupGroup  singleflight.Group
 }
 
 func NewLinkService(links LinkStore, logger *slog.Logger, timeout time.Duration) *LinkService {
+	return NewLinkServiceWithCache(links, nil, logger, timeout)
+}
+
+func NewLinkServiceWithCache(links LinkStore, cache LinkCache, logger *slog.Logger, timeout time.Duration) *LinkService {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
@@ -53,6 +71,8 @@ func NewLinkService(links LinkStore, logger *slog.Logger, timeout time.Duration)
 		logger:       logger.With(slog.String("component", "link_service")),
 		timeout:      timeout,
 		generateSlug: domain.AutoGenerateSlug,
+		cache:        cache,
+		cacheTTL:     defaultLinkCacheTTL,
 	}
 }
 
@@ -154,9 +174,71 @@ func (s *LinkService) Resolve(ctx context.Context, code string) (*domain.Link, e
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	link, err := s.links.GetByCode(ctx, strings.TrimSpace(code))
+	code = strings.TrimSpace(code)
+	if link, resolved, err := s.resolveFromCache(ctx, code); resolved {
+		return link, err
+	}
+
+	result, err, _ := s.lookupGroup.Do(code, func() (any, error) {
+		if link, resolved, cacheErr := s.resolveFromCache(ctx, code); resolved {
+			return link, cacheErr
+		}
+		return s.resolveFromStore(ctx, code)
+	})
+	if err != nil {
+		return nil, err
+	}
+	link, ok := result.(*domain.Link)
+	if !ok || link == nil {
+		return nil, errors.New("invalid link lookup result")
+	}
+	return link, nil
+}
+
+type cachedLink struct {
+	OriginalURL string     `json:"original_url"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	IsDisabled  bool       `json:"is_disabled"`
+}
+
+func (s *LinkService) resolveFromCache(ctx context.Context, code string) (*domain.Link, bool, error) {
+	if s.cache == nil {
+		return nil, false, nil
+	}
+
+	value, found, err := s.cache.Get(ctx, linkCacheKey(code))
+	if err != nil {
+		s.logger.WarnContext(ctx, "link cache lookup failed", slog.String("code", code), slog.Any("error", err))
+		return nil, false, nil
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if value == "" {
+		return nil, true, ErrLinkNotFound
+	}
+
+	var cached cachedLink
+	if err := json.Unmarshal([]byte(value), &cached); err != nil {
+		s.logger.WarnContext(ctx, "invalid cached link payload", slog.String("code", code), slog.Any("error", err))
+		return nil, false, nil
+	}
+	if cached.IsDisabled || cached.ExpiresAt != nil && !cached.ExpiresAt.After(time.Now().UTC()) {
+		return nil, true, ErrLinkUnavailable
+	}
+	return &domain.Link{
+		Code:        code,
+		OriginalURL: cached.OriginalURL,
+		ExpiresAt:   cached.ExpiresAt,
+		IsDisabled:  cached.IsDisabled,
+	}, true, nil
+}
+
+func (s *LinkService) resolveFromStore(ctx context.Context, code string) (*domain.Link, error) {
+	link, err := s.links.GetByCode(ctx, code)
 	if err != nil {
 		if errors.Is(err, domain.ErrLinkNotFound) {
+			s.cacheValue(ctx, code, "", negativeCacheTTL)
 			return nil, ErrLinkNotFound
 		}
 		return nil, fmt.Errorf("resolve link: %w", err)
@@ -164,7 +246,42 @@ func (s *LinkService) Resolve(ctx context.Context, code string) (*domain.Link, e
 	if link.IsDisabled || link.ExpiresAt != nil && !link.ExpiresAt.After(time.Now().UTC()) {
 		return nil, ErrLinkUnavailable
 	}
+
+	payload, err := json.Marshal(cachedLink{
+		OriginalURL: link.OriginalURL,
+		ExpiresAt:   link.ExpiresAt,
+		IsDisabled:  link.IsDisabled,
+	})
+	if err != nil {
+		s.logger.WarnContext(ctx, "failed to encode link cache payload", slog.String("code", code), slog.Any("error", err))
+		return link, nil
+	}
+	s.cacheValue(ctx, code, string(payload), s.linkCacheTTL(link, time.Now().UTC()))
 	return link, nil
+}
+
+func (s *LinkService) cacheValue(ctx context.Context, code, value string, ttl time.Duration) {
+	if s.cache == nil || ttl <= 0 {
+		return
+	}
+	if err := s.cache.Set(ctx, linkCacheKey(code), value, ttl); err != nil {
+		s.logger.WarnContext(ctx, "failed to cache link", slog.String("code", code), slog.Any("error", err))
+	}
+}
+
+func (s *LinkService) linkCacheTTL(link *domain.Link, now time.Time) time.Duration {
+	ttl := s.cacheTTL
+	if link.ExpiresAt != nil {
+		remaining := link.ExpiresAt.Sub(now)
+		if remaining < ttl {
+			ttl = remaining
+		}
+	}
+	return ttl
+}
+
+func linkCacheKey(code string) string {
+	return "link:" + code
 }
 
 func normalizeOriginalURL(rawURL string) (string, error) {

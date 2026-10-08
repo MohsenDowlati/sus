@@ -14,6 +14,7 @@ import (
 
 	"github.com/MohsenDowlati/shorts/internal/api"
 	"github.com/MohsenDowlati/shorts/internal/auth"
+	cache "github.com/MohsenDowlati/shorts/internal/cache"
 	"github.com/MohsenDowlati/shorts/internal/config"
 	httphandler "github.com/MohsenDowlati/shorts/internal/handler/http"
 	"github.com/MohsenDowlati/shorts/internal/repository"
@@ -22,7 +23,7 @@ import (
 
 // Run bootstraps configuration, logging, storage and the HTTP server, then
 // blocks until an interrupt triggers a graceful shutdown.
-func Run() error {
+func Run() (runErr error) {
 	env := config.NewEnv()
 
 	logger := newLogger(env)
@@ -32,9 +33,23 @@ func Run() error {
 		return fmt.Errorf("invalid environment: %w", err)
 	}
 
-	// Connects to MongoDB and ensures indexes (fatal on failure).
-	app := AppWithEnv(env)
-	defer app.CloseDBConnection()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), env.RedisDialTimeout)
+	app, err := AppWithEnv(startupCtx, env)
+	startupCancel()
+	if err != nil {
+		return fmt.Errorf("initialize application dependencies: %w", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := app.Close(closeCtx); err != nil {
+			if runErr == nil {
+				runErr = err
+				return
+			}
+			logger.Error("dependency shutdown failed", slog.Any("error", err))
+		}
+	}()
 
 	db := app.Mongo.Database(env.DBName)
 
@@ -49,7 +64,7 @@ func Run() error {
 
 	requestTimeout := time.Duration(env.ContextTimeout) * time.Second
 	authHandler := httphandler.NewAuthHandler(userRepo, tokens, logger, requestTimeout)
-	linkService := service.NewLinkService(linkRepo, logger, requestTimeout)
+	linkService := service.NewLinkServiceWithCache(linkRepo, cache.NewRedis(app.Redis), logger, requestTimeout)
 	linkHandler := httphandler.NewLinkHandler(linkService, logger)
 	router := api.NewRouter(authHandler, linkHandler, tokens, logger)
 

@@ -7,13 +7,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 // Env holds all runtime configuration, loaded from the process environment
 // (and, outside production, from a local .env file). Field groups: app/server,
-// MongoDB connection, and JWT settings.
+// MongoDB, Redis, and JWT settings.
 type Env struct {
 	AppEnv        string
 	ServerAddress string
@@ -28,6 +29,15 @@ type Env struct {
 	DBPass       string
 	DBName       string
 	DBAuthSource string
+
+	RedisAddr         string
+	RedisPassword     string
+	RedisDB           int
+	RedisPoolSize     int
+	RedisMinIdleConns int
+	RedisDialTimeout  time.Duration
+	RedisReadTimeout  time.Duration
+	RedisWriteTimeout time.Duration
 
 	AccessTokenSecret      string
 	RefreshTokenSecret     string
@@ -55,6 +65,21 @@ func (e *Env) Validate() error {
 	if strings.TrimSpace(e.DBName) == "" {
 		return errors.New("DB_NAME is required")
 	}
+	if strings.TrimSpace(e.RedisAddr) == "" {
+		return errors.New("REDIS_ADDR is required")
+	}
+	if e.RedisDB < 0 {
+		return errors.New("REDIS_DB must not be negative")
+	}
+	if e.RedisPoolSize <= 0 {
+		return errors.New("REDIS_POOL_SIZE must be positive")
+	}
+	if e.RedisMinIdleConns < 0 || e.RedisMinIdleConns > e.RedisPoolSize {
+		return errors.New("REDIS_MIN_IDLE_CONNS must be between 0 and REDIS_POOL_SIZE")
+	}
+	if e.RedisDialTimeout <= 0 || e.RedisReadTimeout <= 0 || e.RedisWriteTimeout <= 0 {
+		return errors.New("Redis timeouts must be positive")
+	}
 	return nil
 }
 
@@ -75,6 +100,15 @@ func NewEnv() *Env {
 		DBPass:       getEnv("DB_PASS", ""),
 		DBName:       getEnv("DB_NAME", ""),
 		DBAuthSource: getEnv("DB_AUTH_SOURCE", ""),
+
+		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
+		RedisDB:           getEnvAsInt("REDIS_DB", 0),
+		RedisPoolSize:     getEnvAsInt("REDIS_POOL_SIZE", 100),
+		RedisMinIdleConns: getEnvAsInt("REDIS_MIN_IDLE_CONNS", 10),
+		RedisDialTimeout:  getEnvAsDuration("REDIS_DIAL_TIMEOUT", 5*time.Second),
+		RedisReadTimeout:  getEnvAsDuration("REDIS_READ_TIMEOUT", 3*time.Second),
+		RedisWriteTimeout: getEnvAsDuration("REDIS_WRITE_TIMEOUT", 3*time.Second),
 
 		AccessTokenSecret:      getEnv("ACCESS_TOKEN_SECRET", ""),
 		RefreshTokenSecret:     getEnv("REFRESH_TOKEN_SECRET", ""),
@@ -145,6 +179,18 @@ func getEnvAsInt(key string, defaultVal int) int {
 		log.Fatalf("invalid value for %s: %v", key, err)
 	}
 	return value
+}
+
+func getEnvAsDuration(key string, defaultVal time.Duration) time.Duration {
+	value, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return defaultVal
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		log.Fatalf("invalid duration for %s: %v", key, err)
+	}
+	return duration
 }
 
 func extractDBNameFromURI(uri string) string {

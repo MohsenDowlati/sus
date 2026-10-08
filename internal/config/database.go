@@ -41,17 +41,12 @@ func NewMongoDatabase(env *Env) mongodb.Client {
 	return client
 }
 
-func CloseMongoDBConnection(client mongodb.Client) {
+func CloseMongoDBConnection(ctx context.Context, client mongodb.Client) error {
 	if client == nil {
-		return
+		return nil
 	}
 
-	err := client.Disconnect(context.TODO())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("Connection to MongoDB closed.")
+	return client.Disconnect(ctx)
 }
 
 func buildMongoURI(env *Env) string {
