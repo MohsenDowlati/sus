@@ -34,7 +34,7 @@ func NewMongoDatabase(env *Env) mongodb.Client {
 		log.Fatal(err)
 	}
 
-	if err = mongodb.EnsureIndexes(ctx, client.Database(env.DBName)); err != nil {
+	if err = mongodb.EnsureIndexesWithClickRetention(ctx, client.Database(env.DBName), env.ClickEventsRetention()); err != nil {
 		log.Fatalf("ensure indexes: %v", err)
 	}
 

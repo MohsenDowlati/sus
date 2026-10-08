@@ -12,13 +12,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/analytics"
 	"github.com/MohsenDowlati/shorts/internal/api"
 	"github.com/MohsenDowlati/shorts/internal/auth"
 	cache "github.com/MohsenDowlati/shorts/internal/cache"
 	"github.com/MohsenDowlati/shorts/internal/config"
 	httphandler "github.com/MohsenDowlati/shorts/internal/handler/http"
+	"github.com/MohsenDowlati/shorts/internal/ratelimit"
 	"github.com/MohsenDowlati/shorts/internal/repository"
 	"github.com/MohsenDowlati/shorts/internal/service"
+	"github.com/MohsenDowlati/shorts/internal/urlguard"
 )
 
 // Run bootstraps configuration, logging, storage and the HTTP server, then
@@ -64,9 +67,44 @@ func Run() (runErr error) {
 
 	requestTimeout := time.Duration(env.ContextTimeout) * time.Second
 	authHandler := httphandler.NewAuthHandler(userRepo, tokens, logger, requestTimeout)
-	linkService := service.NewLinkServiceWithCache(linkRepo, cache.NewRedis(app.Redis), logger, requestTimeout)
-	linkHandler := httphandler.NewLinkHandler(linkService, logger)
-	router := api.NewRouter(authHandler, linkHandler, tokens, logger)
+	clientIPs, err := ratelimit.NewClientIPResolver(env.TrustedProxyCIDRs)
+	if err != nil {
+		return fmt.Errorf("initialize client IP resolver: %w", err)
+	}
+	linkService := service.NewLinkServiceWithValidator(
+		linkRepo,
+		cache.NewRedis(app.Redis),
+		urlguard.NewDefault(env.ShortenerDomains),
+		logger,
+		requestTimeout,
+	)
+	analyticsService := service.NewLinkAnalyticsService(
+		linkRepo,
+		repository.NewLinkAnalyticsRepository(db),
+		requestTimeout,
+	)
+	clickTracker := analytics.NewTracker(
+		analytics.NewRedisStreamPublisherForStream(app.Redis, env.RedisAnalyticsStream),
+		clientIPs,
+		env.AnalyticsIPSalt,
+		logger,
+		1024,
+	)
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := clickTracker.Close(closeCtx); err != nil {
+			if runErr == nil {
+				runErr = fmt.Errorf("close click analytics: %w", err)
+				return
+			}
+			logger.Error("click analytics shutdown failed", slog.Any("error", err))
+		}
+	}()
+	linkHandler := httphandler.NewLinkHandlerWithAnalytics(linkService, clickTracker, logger)
+	analyticsHandler := httphandler.NewAnalyticsHandlerWithMaxQueryDays(analyticsService, logger, env.AnalyticsMaxQueryDays)
+	rateLimiter := ratelimit.NewWithClientIPResolver(ratelimit.NewRedisStore(app.Redis), logger, clientIPs)
+	router := api.NewRouterWithAnalytics(authHandler, linkHandler, analyticsHandler, tokens, rateLimiter, logger)
 
 	srv := &http.Server{
 		Addr:              env.ServerAddress,

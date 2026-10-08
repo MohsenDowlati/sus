@@ -34,7 +34,6 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("status", ww.Status()),
 				slog.Int("bytes", ww.BytesWritten()),
 				slog.Duration("duration", time.Since(start)),
-				slog.String("remote", r.RemoteAddr),
 				slog.String("request_id", chimw.GetReqID(r.Context())),
 			)
 		})

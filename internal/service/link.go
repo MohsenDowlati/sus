@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/MohsenDowlati/shorts/internal/domain"
+	"github.com/MohsenDowlati/shorts/internal/urlguard"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/sync/singleflight"
 )
@@ -40,6 +40,10 @@ type LinkCache interface {
 	Set(context.Context, string, string, time.Duration) error
 }
 
+type TargetURLValidator interface {
+	Validate(context.Context, string) (string, error)
+}
+
 type CreateLinkParams struct {
 	OriginalURL string
 	Type        domain.LinkType
@@ -56,6 +60,7 @@ type LinkService struct {
 	cache        LinkCache
 	cacheTTL     time.Duration
 	lookupGroup  singleflight.Group
+	urlValidator TargetURLValidator
 }
 
 func NewLinkService(links LinkStore, logger *slog.Logger, timeout time.Duration) *LinkService {
@@ -63,6 +68,10 @@ func NewLinkService(links LinkStore, logger *slog.Logger, timeout time.Duration)
 }
 
 func NewLinkServiceWithCache(links LinkStore, cache LinkCache, logger *slog.Logger, timeout time.Duration) *LinkService {
+	return NewLinkServiceWithValidator(links, cache, urlguard.NewDefault(nil), logger, timeout)
+}
+
+func NewLinkServiceWithValidator(links LinkStore, cache LinkCache, validator TargetURLValidator, logger *slog.Logger, timeout time.Duration) *LinkService {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
@@ -73,6 +82,7 @@ func NewLinkServiceWithCache(links LinkStore, cache LinkCache, logger *slog.Logg
 		generateSlug: domain.AutoGenerateSlug,
 		cache:        cache,
 		cacheTTL:     defaultLinkCacheTTL,
+		urlValidator: validator,
 	}
 }
 
@@ -84,9 +94,9 @@ func (s *LinkService) CreateLink(ctx context.Context, params CreateLinkParams) (
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	originalURL, err := normalizeOriginalURL(params.OriginalURL)
+	originalURL, err := s.urlValidator.Validate(ctx, params.OriginalURL)
 	if err != nil {
-		return nil, ErrInvalidURL
+		return nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
 
 	switch params.Type {
@@ -195,6 +205,26 @@ func (s *LinkService) Resolve(ctx context.Context, code string) (*domain.Link, e
 	return link, nil
 }
 
+func (s *LinkService) CheckSlug(ctx context.Context, code string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	code = strings.TrimSpace(code)
+	valid, err := domain.ValidateSlug(code)
+	if err != nil || !valid {
+		return false, ErrInvalidSlug
+	}
+
+	_, err = s.links.GetByCode(ctx, code)
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, domain.ErrLinkNotFound) {
+		return true, nil
+	}
+	return false, fmt.Errorf("check slug availability: %w", err)
+}
+
 type cachedLink struct {
 	OriginalURL string     `json:"original_url"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
@@ -282,12 +312,4 @@ func (s *LinkService) linkCacheTTL(link *domain.Link, now time.Time) time.Durati
 
 func linkCacheKey(code string) string {
 	return "link:" + code
-}
-
-func normalizeOriginalURL(rawURL string) (string, error) {
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", ErrInvalidURL
-	}
-	return parsed.String(), nil
 }

@@ -22,7 +22,8 @@ type Database interface {
 type Collection interface {
 	FindOne(context.Context, interface{}) SingleResult
 	InsertOne(context.Context, interface{}) (interface{}, error)
-	InsertMany(context.Context, []interface{}) ([]interface{}, error)
+	InsertMany(context.Context, []interface{}, ...*options.InsertManyOptions) ([]interface{}, error)
+	BulkWrite(context.Context, []mongo.WriteModel, ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error)
 	DeleteOne(context.Context, interface{}) (int64, error)
 	DeleteMany(context.Context, interface{}) (int64, error)
 	Find(context.Context, interface{}, ...*options.FindOptions) (Cursor, error)
@@ -158,12 +159,16 @@ func (mc *mongoCollection) InsertOne(ctx context.Context, document interface{}) 
 	return result.InsertedID, nil
 }
 
-func (mc *mongoCollection) InsertMany(ctx context.Context, document []interface{}) ([]interface{}, error) {
-	result, err := mc.coll.InsertMany(ctx, document)
+func (mc *mongoCollection) InsertMany(ctx context.Context, document []interface{}, opts ...*options.InsertManyOptions) ([]interface{}, error) {
+	result, err := mc.coll.InsertMany(ctx, document, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return result.InsertedIDs, nil
+}
+
+func (mc *mongoCollection) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+	return mc.coll.BulkWrite(ctx, models, opts...)
 }
 
 func (mc *mongoCollection) DeleteOne(ctx context.Context, filter interface{}) (int64, error) {
