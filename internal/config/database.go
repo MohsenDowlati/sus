@@ -3,13 +3,14 @@ package config
 import (
 	"context"
 	"fmt"
+	"github.com/MohsenDowlati/shorts/internal/repository/mongodb"
 	"log"
 	"net/url"
 	"strings"
 	"time"
 )
 
-func NewMongoDatabase(env *Env) Client {
+func NewMongoDatabase(env *Env) mongodb.Client {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -18,7 +19,7 @@ func NewMongoDatabase(env *Env) Client {
 		log.Fatal("MongoDB configuration missing: provide either MONGODB_URI or DB_HOST/DB_PORT")
 	}
 
-	client, err := NewClient(mongodbURI)
+	client, err := mongodb.NewClient(mongodbURI)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -33,14 +34,14 @@ func NewMongoDatabase(env *Env) Client {
 		log.Fatal(err)
 	}
 
-	if err = EnsureIndexes(ctx, client.Database(env.DBName)); err != nil {
+	if err = mongodb.EnsureIndexes(ctx, client.Database(env.DBName)); err != nil {
 		log.Fatalf("ensure indexes: %v", err)
 	}
 
 	return client
 }
 
-func CloseMongoDBConnection(client Client) {
+func CloseMongoDBConnection(client mongodb.Client) {
 	if client == nil {
 		return
 	}

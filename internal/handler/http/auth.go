@@ -1,4 +1,4 @@
-package api
+package handler
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// AuthHandler serves the signup/signin/refresh/me endpoints.
 type AuthHandler struct {
 	users   *repository.UserRepository
 	tokens  *auth.TokenService
@@ -46,21 +45,20 @@ type authResponse struct {
 	RefreshToken string   `json:"refresh_token"`
 }
 
-// Signup creates a new account and returns a fresh token pair.
 func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeCredentials(w, r)
 	if !ok {
 		return
 	}
 	if msg, valid := validateCredentials(req); !valid {
-		writeError(w, http.StatusBadRequest, msg)
+		WriteError(w, http.StatusBadRequest, msg)
 		return
 	}
 
 	hashed, err := auth.HashPassword(req.Password)
 	if err != nil {
-		h.logger.Error("hash password", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not process password")
+		h.logger.ErrorContext(r.Context(), "hash password", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not process password")
 		return
 	}
 
@@ -75,21 +73,19 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
-
 	if err := h.users.Create(ctx, user); err != nil {
 		if errors.Is(err, domain.ErrUsernameTaken) {
-			writeError(w, http.StatusConflict, "username already taken")
+			WriteError(w, http.StatusConflict, "username already taken")
 			return
 		}
-		h.logger.Error("create user", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not create user")
+		h.logger.ErrorContext(ctx, "create user", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not create user")
 		return
 	}
 
 	h.respondWithTokens(w, http.StatusCreated, user)
 }
 
-// Signin verifies credentials and returns a fresh token pair.
 func (h *AuthHandler) Signin(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeCredentials(w, r)
 	if !ok {
@@ -98,78 +94,69 @@ func (h *AuthHandler) Signin(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
-
 	user, err := h.users.GetByUsername(ctx, req.Username)
 	if err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
-			// Same response as a bad password so we don't leak which usernames exist.
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			WriteError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
-		h.logger.Error("get user", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not sign in")
+		h.logger.ErrorContext(ctx, "get user", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not sign in")
 		return
 	}
 
 	if err := auth.CheckPassword(user.HashedPassword, req.Password); err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		WriteError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-
 	h.respondWithTokens(w, http.StatusOK, user)
 }
 
-// Refresh exchanges a valid refresh token for a new access token.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
-		writeError(w, http.StatusBadRequest, "refresh_token is required")
+		WriteError(w, http.StatusBadRequest, "refresh_token is required")
 		return
 	}
 
 	claims, err := h.tokens.ParseRefresh(strings.TrimSpace(body.RefreshToken))
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token")
+		WriteError(w, http.StatusUnauthorized, "invalid or expired refresh token")
 		return
 	}
-
 	access, err := h.tokens.GenerateAccess(claims.Subject, claims.Username)
 	if err != nil {
-		h.logger.Error("generate access token", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not issue token")
+		h.logger.ErrorContext(r.Context(), "generate access token", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"access_token": access})
+	WriteJSON(w, http.StatusOK, map[string]string{"access_token": access})
 }
 
-// Me returns the identity carried by the validated access token.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	id, _ := r.Context().Value(ctxUserID).(string)
-	username, _ := r.Context().Value(ctxUsername).(string)
-	writeJSON(w, http.StatusOK, userView{ID: id, Username: username})
+	WriteJSON(w, http.StatusOK, userView{
+		ID:       auth.UserID(r.Context()),
+		Username: auth.Username(r.Context()),
+	})
 }
 
 func (h *AuthHandler) respondWithTokens(w http.ResponseWriter, status int, user *domain.User) {
 	id := user.ID.Hex()
-
 	access, err := h.tokens.GenerateAccess(id, user.Username)
 	if err != nil {
-		h.logger.Error("generate access token", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not issue token")
+		h.logger.Error("generate access token", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
-
 	refresh, err := h.tokens.GenerateRefresh(id, user.Username)
 	if err != nil {
-		h.logger.Error("generate refresh token", slog.String("err", err.Error()))
-		writeError(w, http.StatusInternalServerError, "could not issue token")
+		h.logger.Error("generate refresh token", slog.Any("error", err))
+		WriteError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
-
-	writeJSON(w, status, authResponse{
+	WriteJSON(w, status, authResponse{
 		User:         userView{ID: id, Username: user.Username},
 		AccessToken:  access,
 		RefreshToken: refresh,
@@ -178,10 +165,10 @@ func (h *AuthHandler) respondWithTokens(w http.ResponseWriter, status int, user 
 
 func decodeCredentials(w http.ResponseWriter, r *http.Request) (credentials, bool) {
 	var req credentials
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return req, false
 	}
 	req.Username = strings.TrimSpace(req.Username)

@@ -15,7 +15,9 @@ import (
 	"github.com/MohsenDowlati/shorts/internal/api"
 	"github.com/MohsenDowlati/shorts/internal/auth"
 	"github.com/MohsenDowlati/shorts/internal/config"
+	httphandler "github.com/MohsenDowlati/shorts/internal/handler/http"
 	"github.com/MohsenDowlati/shorts/internal/repository"
+	"github.com/MohsenDowlati/shorts/internal/service"
 )
 
 // Run bootstraps configuration, logging, storage and the HTTP server, then
@@ -31,12 +33,13 @@ func Run() error {
 	}
 
 	// Connects to MongoDB and ensures indexes (fatal on failure).
-	app := config.AppWithEnv(env)
+	app := AppWithEnv(env)
 	defer app.CloseDBConnection()
 
 	db := app.Mongo.Database(env.DBName)
 
 	userRepo := repository.NewUserRepository(db)
+	linkRepo := repository.NewLinkRepository(db)
 	tokens := auth.NewTokenService(
 		env.AccessTokenSecret,
 		env.RefreshTokenSecret,
@@ -45,8 +48,10 @@ func Run() error {
 	)
 
 	requestTimeout := time.Duration(env.ContextTimeout) * time.Second
-	authHandler := api.NewAuthHandler(userRepo, tokens, logger, requestTimeout)
-	router := api.NewRouter(authHandler, tokens, logger)
+	authHandler := httphandler.NewAuthHandler(userRepo, tokens, logger, requestTimeout)
+	linkService := service.NewLinkService(linkRepo, logger, requestTimeout)
+	linkHandler := httphandler.NewLinkHandler(linkService, logger)
+	router := api.NewRouter(authHandler, linkHandler, tokens, logger)
 
 	srv := &http.Server{
 		Addr:              env.ServerAddress,

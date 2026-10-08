@@ -1,4 +1,4 @@
-package config
+package mongodb
 
 import (
 	"context"
@@ -34,7 +34,14 @@ func EnsureIndexes(ctx context.Context, db Database) error {
 //   - ttl_expires_at  {expires_at: 1} expireAfterSeconds: 0 — native TTL; a link
 //     is deleted once its expires_at passes. Links without expires_at never expire.
 func ensureLinkIndexes(ctx context.Context, links Collection) error {
-	models := []mongo.IndexModel{
+	if _, err := links.Indexes().CreateMany(ctx, linkIndexModels()); err != nil {
+		return fmt.Errorf("create %s indexes: %w", LinksCollection, err)
+	}
+	return nil
+}
+
+func linkIndexModels() []mongo.IndexModel {
+	return []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "code", Value: 1}},
 			Options: options.Index().SetName("uniq_code").SetUnique(true),
@@ -48,10 +55,6 @@ func ensureLinkIndexes(ctx context.Context, links Collection) error {
 			Options: options.Index().SetName("ttl_expires_at").SetExpireAfterSeconds(0),
 		},
 	}
-	if _, err := links.Indexes().CreateMany(ctx, models); err != nil {
-		return fmt.Errorf("create %s indexes: %w", LinksCollection, err)
-	}
-	return nil
 }
 
 // ensureUserIndexes creates, on the users collection:

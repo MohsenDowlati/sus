@@ -1,4 +1,4 @@
-package config
+package mongodb
 
 import (
 	"context"
@@ -151,13 +151,19 @@ func (mc *mongoCollection) UpdateOne(ctx context.Context, filter interface{}, up
 }
 
 func (mc *mongoCollection) InsertOne(ctx context.Context, document interface{}) (interface{}, error) {
-	id, err := mc.coll.InsertOne(ctx, document)
-	return id.InsertedID, err
+	result, err := mc.coll.InsertOne(ctx, document)
+	if err != nil {
+		return nil, err
+	}
+	return result.InsertedID, nil
 }
 
 func (mc *mongoCollection) InsertMany(ctx context.Context, document []interface{}) ([]interface{}, error) {
-	res, err := mc.coll.InsertMany(ctx, document)
-	return res.InsertedIDs, err
+	result, err := mc.coll.InsertMany(ctx, document)
+	if err != nil {
+		return nil, err
+	}
+	return result.InsertedIDs, nil
 }
 
 func (mc *mongoCollection) DeleteOne(ctx context.Context, filter interface{}) (int64, error) {

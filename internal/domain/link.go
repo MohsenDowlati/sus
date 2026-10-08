@@ -18,7 +18,7 @@ type Link struct {
 	Code        string             `bson:"code" json:"code"`
 	OriginalURL string             `bson:"original_url" json:"original_url"`
 	Type        LinkType           `bson:"type" json:"type"`
-	OwnerID     *string            `bson:"owner_id,omitempty" json:"owner_id,omitempty"`
+	OwnerID     string             `bson:"owner_id" json:"owner_id"`
 	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
 	ExpiresAt   *time.Time         `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 	IsDisabled  bool               `bson:"is_disabled" json:"is_disabled"`

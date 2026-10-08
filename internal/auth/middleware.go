@@ -1,4 +1,4 @@
-package api
+package auth
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MohsenDowlati/shorts/internal/auth"
 	chimw "github.com/go-chi/chi/v5/middleware"
 )
 
@@ -44,19 +43,19 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 // Authenticator validates the Bearer access token and injects the user id and
 // username into the request context for downstream handlers.
-func Authenticator(tokens *auth.TokenService) func(http.Handler) http.Handler {
+func Authenticator(tokens *TokenService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
 			scheme, token, found := strings.Cut(header, " ")
 			if !found || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-				writeError(w, http.StatusUnauthorized, "missing or malformed bearer token")
+				writeAuthError(w, "missing or malformed bearer token")
 				return
 			}
 
 			claims, err := tokens.ParseAccess(strings.TrimSpace(token))
 			if err != nil {
-				writeError(w, http.StatusUnauthorized, "invalid or expired token")
+				writeAuthError(w, "invalid or expired token")
 				return
 			}
 
@@ -67,14 +66,18 @@ func Authenticator(tokens *auth.TokenService) func(http.Handler) http.Handler {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if v != nil {
-		_ = json.NewEncoder(w).Encode(v)
-	}
+func UserID(ctx context.Context) string {
+	userID, _ := ctx.Value(ctxUserID).(string)
+	return userID
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func Username(ctx context.Context) string {
+	username, _ := ctx.Value(ctxUsername).(string)
+	return username
+}
+
+func writeAuthError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

@@ -3,8 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"github.com/MohsenDowlati/shorts/internal/repository/mongodb"
 
-	"github.com/MohsenDowlati/shorts/internal/config"
 	"github.com/MohsenDowlati/shorts/internal/domain"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -12,11 +12,11 @@ import (
 
 // UserRepository persists users in MongoDB via the config.Collection abstraction.
 type UserRepository struct {
-	coll config.Collection
+	coll mongodb.Collection
 }
 
-func NewUserRepository(db config.Database) *UserRepository {
-	return &UserRepository{coll: db.Collection(config.UsersCollection)}
+func NewUserRepository(db mongodb.Database) *UserRepository {
+	return &UserRepository{coll: db.Collection(mongodb.UsersCollection)}
 }
 
 // Create inserts a new user. It maps a duplicate-key violation on the unique
