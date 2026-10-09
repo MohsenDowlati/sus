@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "27017:27017"
-    environment:
+    environment: &mongo-root
       MONGO_INITDB_ROOT_USERNAME: Mohsen_Dowlati
       MONGO_INITDB_ROOT_PASSWORD: I_wanna_use_a_weak_password_for_this
     volumes:
@@ -69,6 +69,63 @@ services:
     volumes:
       - ./Docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom_data:/prometheus
+    networks:
+      - url-shortener
+
+  k6-seed:
+    image: mongo:8
+    profiles:
+      - benchmark
+    command: ["mongosh", "--nodb", "--quiet", "--file", "/scripts/seed.mongodb.js"]
+    environment:
+      <<: *mongo-root
+      DB_NAME: "${K6_DB_NAME:-shorts}"
+      MONGODB_URI: "${K6_MONGODB_URI:-}"
+      ORIGINAL_URL: "${K6_TARGET_URL:-https://example.com}"
+    volumes:
+      - ./Docker/k6:/scripts:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - url-shortener
+
+  k6-benchmark:
+    image: grafana/k6:2.3.0
+    profiles:
+      - benchmark
+    command: ["run", "/scripts/benchmark.js"]
+    environment:
+      BASE_URL: "${K6_BASE_URL:-http://host.docker.internal:8080}"
+      ORIGINAL_URL: "${K6_TARGET_URL:-https://example.com}"
+      ACCESS_TOKEN: "${K6_ACCESS_TOKEN:-}"
+      PEAK_RPS: "${K6_PEAK_RPS:-12000}"
+      PREALLOCATED_VUS: "${K6_PREALLOCATED_VUS:-512}"
+      MAX_VUS: "${K6_MAX_VUS:-4096}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Docker/k6:/scripts:ro
+    depends_on:
+      k6-seed:
+        condition: service_completed_successfully
+    networks:
+      - url-shortener
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles:
+      - loadtest
+    command: ["run", "/scripts/smoke.js"]
+    environment:
+      BASE_URL: "${K6_BASE_URL:-http://host.docker.internal:8080}"
+      REDIRECT_CODE: "${K6_REDIRECT_CODE:-}"
+      K6_VUS: "${K6_VUS:-1}"
+      K6_DURATION: "${K6_DURATION:-30s}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Docker/k6:/scripts:ro
     networks:
       - url-shortener
 

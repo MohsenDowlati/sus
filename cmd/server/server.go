@@ -128,7 +128,8 @@ func Run() (runErr error) {
 	linkHandler := httphandler.NewLinkHandlerWithAnalytics(linkService, clickTracker, logger)
 	analyticsHandler := httphandler.NewAnalyticsHandlerWithMaxQueryDays(analyticsService, logger, env.AnalyticsMaxQueryDays)
 	rateLimiter := ratelimit.NewWithClientIPResolver(ratelimit.NewRedisStore(app.Redis), logger, clientIPs)
-	router := api.NewRouterWithAnalytics(authHandler, linkHandler, analyticsHandler, tokens, rateLimiter, logger)
+	router := api.NewRouterWithAnalytics(authHandler, linkHandler, analyticsHandler, tokens, rateLimiter, logger,
+		api.RouterOptions{CreateLinkRateLimit: int64(env.CreateLinkRateLimit)})
 
 	srv := &http.Server{
 		Addr:              env.ServerAddress,

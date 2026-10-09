@@ -20,8 +20,13 @@ func NewRouter(authHandler *httphandler.AuthHandler, linkHandler *httphandler.Li
 	return NewRouterWithAnalytics(authHandler, linkHandler, nil, tokens, limiter, logger)
 }
 
+// RouterOptions overrides route policy defaults when supplied by application config.
+type RouterOptions struct {
+	CreateLinkRateLimit int64
+}
+
 // NewRouterWithAnalytics adds the authenticated, rate-limited link analytics endpoint.
-func NewRouterWithAnalytics(authHandler *httphandler.AuthHandler, linkHandler *httphandler.LinkHandler, analyticsHandler *httphandler.AnalyticsHandler, tokens *auth.TokenService, limiter *ratelimit.Limiter, logger *slog.Logger) *chi.Mux {
+func NewRouterWithAnalytics(authHandler *httphandler.AuthHandler, linkHandler *httphandler.LinkHandler, analyticsHandler *httphandler.AnalyticsHandler, tokens *auth.TokenService, limiter *ratelimit.Limiter, logger *slog.Logger, options ...RouterOptions) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -41,9 +46,13 @@ func NewRouterWithAnalytics(authHandler *httphandler.AuthHandler, linkHandler *h
 		r.With(auth.Authenticator(tokens)).Get("/me", authHandler.Me)
 	})
 
+	createLimit := int64(20)
+	if len(options) > 0 && options[0].CreateLinkRateLimit > 0 {
+		createLimit = options[0].CreateLinkRateLimit
+	}
 	createLinkLimit := limiter.Middleware(ratelimit.Policy{
 		Name:    "create-link",
-		Limit:   20,
+		Limit:   createLimit,
 		Window:  time.Minute,
 		KeyFunc: limiter.UserOrIP,
 	})

@@ -10,6 +10,7 @@ A URL shortener API built with Go, MongoDB, and Redis. Shorts supports generated
 - [API reference](#api-reference)
 - [Configuration](#configuration)
 - [Observability](#observability)
+- [Load testing](#load-testing)
 - [Development](#development)
 - [Documentation](#documentation)
 
@@ -206,6 +207,7 @@ Start with [.env.example](.env.example). Development loads `.env` from the worki
 | `WORKER_METRICS_ADDRESS` | `:9091` | Worker metrics listener |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `CONTEXT_TIMEOUT` | `10` | Service operation timeout in seconds |
+| `CREATE_LINK_RATE_LIMIT_PER_MINUTE` | `20` | Maximum link creation attempts per user per minute |
 | `MONGODB_URI` | URI or `DB_*` settings required | MongoDB connection string; takes precedence over `DB_*` connection settings |
 | `DB_NAME` | Required; may be derived from URI | Database name |
 | `REDIS_ADDR` | `localhost:6379` | Redis address |
@@ -255,6 +257,47 @@ Open Jaeger on port `16686` and select `shortener-api` or `shortener-analytics-w
 
 Production writes JSON records to stdout. Context-aware logs include `trace_id` and `span_id` when a valid span context is present. HTTP access records include status and fractional `duration_ms`; redirect records also include the code and cache outcome. The logging handler sanitizes sensitive values. See [Logging](docs/logging.md) for its behavior and limits.
 
+## Load testing
+
+Compose includes an optional k6 service under the `loadtest` profile. Start the
+API on the host first, then run the bundled smoke test:
+
+```sh
+docker compose --profile loadtest run --rm k6
+```
+
+The default run uses one virtual user for 30 seconds against `/healthz`. To also
+exercise redirects, create an active link and provide its code:
+
+```sh
+docker compose --profile loadtest run --rm \
+  -e REDIRECT_CODE=my-link -e K6_VUS=10 -e K6_DURATION=1m k6
+```
+
+Redirect following is disabled so the test measures the shortener's `307`
+response without sending traffic to the destination. Checks require successful
+health and redirect responses; thresholds require fewer than 1% failed requests,
+more than 99% successful checks, and a combined request p95 below 500 ms. These
+thresholds are a starting point for local testing.
+
+Set `K6_BASE_URL` to override `http://host.docker.internal:8080`. You can also set
+`K6_REDIRECT_CODE`, `K6_VUS`, and `K6_DURATION` in your shell or Compose `.env`.
+The script is mounted read-only from [Docker/k6/smoke.js](Docker/k6/smoke.js);
+edit it to define additional scenarios. Test results appear in the terminal.
+
+For the staged **95% redirects / 5% creates** benchmark, use the `benchmark`
+profile. It seeds 10,000 deterministic links and schedules a 10-minute ramp,
+12,000 RPS soak, and cool-down. Set the API's creation limit for the benchmark
+and supply an access token before running:
+
+```sh
+export K6_ACCESS_TOKEN='paste-your-access-token-here'
+docker compose --profile benchmark run --rm k6-benchmark
+```
+
+See [Staged load testing](docs/load-testing.md) for setup, stage rates, rate limit
+configuration, and result interpretation.
+
 ## Development
 
 ```text
@@ -298,5 +341,6 @@ Live acceptance checks for metrics, traces, and logs are documented in [Observab
 - [OpenTelemetry tracing](docs/tracing.md)
 - [Structured logging](docs/logging.md)
 - [Observability acceptance checks](docs/observability-checks.md)
+- [Staged load testing](docs/load-testing.md)
 
 Issues and pull requests are welcome. Include reproduction steps for bugs and describe the behavior and verification steps for proposed changes.

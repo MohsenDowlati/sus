@@ -24,6 +24,7 @@ type Env struct {
 	ServerAddress        string
 	WorkerMetricsAddress string
 	LogLevel             string
+	CreateLinkRateLimit  int
 
 	ContextTimeout    int
 	ShortenerDomains  []string
@@ -78,6 +79,9 @@ func (e *Env) Validate() error {
 	}
 	if e.ContextTimeout <= 0 {
 		return errors.New("CONTEXT_TIMEOUT must be positive")
+	}
+	if e.CreateLinkRateLimit <= 0 {
+		return errors.New("CREATE_LINK_RATE_LIMIT_PER_MINUTE must be positive")
 	}
 	if len(e.ShortenerDomains) == 0 {
 		return errors.New("SHORTENER_DOMAINS must contain at least one domain")
@@ -192,6 +196,7 @@ func NewEnv() *Env {
 		ServerAddress:        getEnv("SERVER_ADDRESS", ":8080"),
 		WorkerMetricsAddress: getEnv("WORKER_METRICS_ADDRESS", ":9091"),
 		LogLevel:             getEnv("LOG_LEVEL", "info"),
+		CreateLinkRateLimit:  getEnvAsInt("CREATE_LINK_RATE_LIMIT_PER_MINUTE", 20),
 
 		ContextTimeout:    getEnvAsInt("CONTEXT_TIMEOUT", 10),
 		ShortenerDomains:  getEnvAsList("SHORTENER_DOMAINS", []string{"localhost"}),
