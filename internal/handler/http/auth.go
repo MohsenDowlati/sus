@@ -83,7 +83,7 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondWithTokens(w, http.StatusCreated, user)
+	h.respondWithTokens(r.Context(), w, http.StatusCreated, user)
 }
 
 func (h *AuthHandler) Signin(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +109,7 @@ func (h *AuthHandler) Signin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	h.respondWithTokens(w, http.StatusOK, user)
+	h.respondWithTokens(r.Context(), w, http.StatusOK, user)
 }
 
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
@@ -142,17 +142,17 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *AuthHandler) respondWithTokens(w http.ResponseWriter, status int, user *domain.User) {
+func (h *AuthHandler) respondWithTokens(ctx context.Context, w http.ResponseWriter, status int, user *domain.User) {
 	id := user.ID.Hex()
 	access, err := h.tokens.GenerateAccess(id, user.Username)
 	if err != nil {
-		h.logger.Error("generate access token", slog.Any("error", err))
+		h.logger.ErrorContext(ctx, "generate access token", slog.Any("error", err))
 		WriteError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
 	refresh, err := h.tokens.GenerateRefresh(id, user.Username)
 	if err != nil {
-		h.logger.Error("generate refresh token", slog.Any("error", err))
+		h.logger.ErrorContext(ctx, "generate refresh token", slog.Any("error", err))
 		WriteError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}

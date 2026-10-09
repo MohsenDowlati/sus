@@ -49,7 +49,7 @@ func (limiter *Limiter) Middleware(policy Policy) func(http.Handler) http.Handle
 			decision, err := limiter.store.Allow(r.Context(), key, policy.Limit, policy.Window, now)
 			if err != nil {
 				limiter.logger.ErrorContext(r.Context(), "rate limit check failed; allowing request",
-					slog.String("key", key),
+					slog.String("policy", policy.Name),
 					slog.Any("error", err),
 				)
 				next.ServeHTTP(w, r)

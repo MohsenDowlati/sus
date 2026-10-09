@@ -6,6 +6,9 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/metrics"
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
+
 	"go.mongodb.org/mongo-driver/bson/bsoncodec"
 	"go.mongodb.org/mongo-driver/bson/bsonrw"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
@@ -100,7 +103,8 @@ func (d *nullawareDecoder) DecodeValue(dctx bsoncodec.DecodeContext, vr bsonrw.V
 func NewClient(connection string) (Client, error) {
 
 	time.Local = time.UTC
-	c, err := mongo.NewClient(options.Client().ApplyURI(connection))
+	c, err := mongo.NewClient(options.Client().ApplyURI(connection).
+		SetMonitor(telemetry.MongoMonitor()))
 
 	return &mongoClient{cl: c}, err
 
@@ -143,15 +147,18 @@ func (md *mongoDatabase) Client() Client {
 }
 
 func (mc *mongoCollection) FindOne(ctx context.Context, filter interface{}) SingleResult {
+	metrics.DatabaseOperation("find", mc.coll.Name())
 	singleResult := mc.coll.FindOne(ctx, filter)
 	return &mongoSingleResult{sr: singleResult}
 }
 
 func (mc *mongoCollection) UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
+	metrics.DatabaseOperation("update", mc.coll.Name())
 	return mc.coll.UpdateOne(ctx, filter, update, opts[:]...)
 }
 
 func (mc *mongoCollection) InsertOne(ctx context.Context, document interface{}) (interface{}, error) {
+	metrics.DatabaseOperation("insert", mc.coll.Name())
 	result, err := mc.coll.InsertOne(ctx, document)
 	if err != nil {
 		return nil, err
@@ -160,6 +167,7 @@ func (mc *mongoCollection) InsertOne(ctx context.Context, document interface{}) 
 }
 
 func (mc *mongoCollection) InsertMany(ctx context.Context, document []interface{}, opts ...*options.InsertManyOptions) ([]interface{}, error) {
+	metrics.DatabaseOperation("insert", mc.coll.Name())
 	result, err := mc.coll.InsertMany(ctx, document, opts...)
 	if err != nil {
 		return nil, err
@@ -168,6 +176,19 @@ func (mc *mongoCollection) InsertMany(ctx context.Context, document []interface{
 }
 
 func (mc *mongoCollection) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+	// A mixed bulk command counts once for each supported operation kind.
+	kinds := make(map[string]bool)
+	for _, model := range models {
+		switch model.(type) {
+		case *mongo.InsertOneModel:
+			kinds["insert"] = true
+		case *mongo.UpdateOneModel, *mongo.UpdateManyModel, *mongo.ReplaceOneModel:
+			kinds["update"] = true
+		}
+	}
+	for kind := range kinds {
+		metrics.DatabaseOperation(kind, mc.coll.Name())
+	}
 	return mc.coll.BulkWrite(ctx, models, opts...)
 }
 
@@ -182,20 +203,24 @@ func (mc *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (
 }
 
 func (mc *mongoCollection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (Cursor, error) {
+	metrics.DatabaseOperation("find", mc.coll.Name())
 	findResult, err := mc.coll.Find(ctx, filter, opts...)
 	return &mongoCursor{mc: findResult}, err
 }
 
 func (mc *mongoCollection) Aggregate(ctx context.Context, pipeline interface{}) (Cursor, error) {
+	metrics.DatabaseOperation("find", mc.coll.Name())
 	aggregateResult, err := mc.coll.Aggregate(ctx, pipeline)
 	return &mongoCursor{mc: aggregateResult}, err
 }
 
 func (mc *mongoCollection) UpdateMany(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
+	metrics.DatabaseOperation("update", mc.coll.Name())
 	return mc.coll.UpdateMany(ctx, filter, update, opts[:]...)
 }
 
 func (mc *mongoCollection) CountDocuments(ctx context.Context, filter interface{}, opts ...*options.CountOptions) (int64, error) {
+	metrics.DatabaseOperation("find", mc.coll.Name())
 	return mc.coll.CountDocuments(ctx, filter, opts...)
 }
 

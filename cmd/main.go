@@ -1,12 +1,15 @@
 package main
 
 import (
+	"log/slog"
+	"os"
+
 	"github.com/MohsenDowlati/shorts/cmd/server"
-	"log"
 )
 
 func main() {
 	if err := server.Run(); err != nil {
-		log.Fatalf("failed to start server: %v", err)
+		slog.Error("failed to start server", "error", err)
+		os.Exit(1)
 	}
 }

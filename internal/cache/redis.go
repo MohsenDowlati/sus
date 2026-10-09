@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,11 +19,13 @@ func NewRedis(client *redis.Client) *Redis {
 func (cache *Redis) Get(ctx context.Context, key string) (string, bool, error) {
 	value, err := cache.client.Get(ctx, key).Result()
 	if err == redis.Nil {
+		metrics.CacheMisses.Inc()
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
+	metrics.CacheHits.Inc()
 	return value, true, nil
 }
 

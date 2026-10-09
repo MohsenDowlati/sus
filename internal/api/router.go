@@ -7,7 +7,10 @@ import (
 
 	"github.com/MohsenDowlati/shorts/internal/auth"
 	httphandler "github.com/MohsenDowlati/shorts/internal/handler/http"
+	"github.com/MohsenDowlati/shorts/internal/logging"
+	"github.com/MohsenDowlati/shorts/internal/metrics"
 	"github.com/MohsenDowlati/shorts/internal/ratelimit"
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 )
@@ -22,8 +25,10 @@ func NewRouterWithAnalytics(authHandler *httphandler.AuthHandler, linkHandler *h
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
-	r.Use(chimw.Recoverer)
 	r.Use(auth.RequestLogger(logger))
+	r.Use(logging.Recoverer)
+
+	r.Handle("/metrics", metrics.Handler())
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httphandler.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -55,13 +60,13 @@ func NewRouterWithAnalytics(authHandler *httphandler.AuthHandler, linkHandler *h
 		KeyFunc: limiter.UserOrIP,
 	})
 
-	r.With(auth.Authenticator(tokens), createLinkLimit).Post("/api/v1/links", linkHandler.ShorteningLink)
+	r.With(telemetry.HTTP("POST /api/v1/links"), metrics.Request("create"), auth.Authenticator(tokens), createLinkLimit).Post("/api/v1/links", linkHandler.ShorteningLink)
 	if analyticsHandler != nil {
 		r.With(auth.Authenticator(tokens), analyticsLimit).Get("/api/v1/links/{code}/analytics", analyticsHandler.LinkAnalytics)
 	}
 	r.With(slugCheckLimit).Get("/api/v1/links/check-slug", linkHandler.CheckSlug)
 	r.With(slugCheckLimit).Post("/api/v1/links/check-slug", linkHandler.CheckSlug)
-	r.Get("/{code}", linkHandler.Redirect)
+	r.With(telemetry.HTTP("GET /{code}"), metrics.Request("redirect")).Get("/{code}", linkHandler.Redirect)
 
 	return r
 }

@@ -6,9 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
-	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/MohsenDowlati/shorts/internal/logging"
 )
 
 type ctxKey string
@@ -18,26 +17,9 @@ const (
 	ctxUsername ctxKey = "username"
 )
 
-// RequestLogger logs one structured slog line per request once the handler has
-// returned, including the final status code, bytes written and latency.
+// RequestLogger records sanitized access events after each request completes.
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-			ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
-
-			next.ServeHTTP(ww, r)
-
-			logger.LogAttrs(r.Context(), slog.LevelInfo, "http_request",
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-				slog.Int("status", ww.Status()),
-				slog.Int("bytes", ww.BytesWritten()),
-				slog.Duration("duration", time.Since(start)),
-				slog.String("request_id", chimw.GetReqID(r.Context())),
-			)
-		})
-	}
+	return logging.RequestLogger(logger)
 }
 
 // Authenticator validates the Bearer access token and injects the user id and

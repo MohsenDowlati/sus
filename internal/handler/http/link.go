@@ -11,6 +11,7 @@ import (
 	"github.com/MohsenDowlati/shorts/internal/auth"
 	"github.com/MohsenDowlati/shorts/internal/domain"
 	"github.com/MohsenDowlati/shorts/internal/service"
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -76,6 +77,7 @@ func (h *LinkHandler) ShorteningLink(w http.ResponseWriter, r *http.Request) {
 
 	link, err := h.service.CreateLink(r.Context(), params)
 	if err != nil {
+		telemetry.RecordError(r.Context(), err)
 		switch {
 		case errors.Is(err, service.ErrInvalidSlug),
 			errors.Is(err, service.ErrSlugRequired),
@@ -99,6 +101,7 @@ func (h *LinkHandler) ShorteningLink(w http.ResponseWriter, r *http.Request) {
 func (h *LinkHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	link, err := h.service.Resolve(r.Context(), chi.URLParam(r, "code"))
 	if err != nil {
+		telemetry.RecordError(r.Context(), err)
 		switch {
 		case errors.Is(err, service.ErrLinkNotFound):
 			WriteError(w, http.StatusNotFound, "link not found")

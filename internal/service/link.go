@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MohsenDowlati/shorts/internal/domain"
+	"github.com/MohsenDowlati/shorts/internal/logging"
 	"github.com/MohsenDowlati/shorts/internal/urlguard"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/sync/singleflight"
@@ -185,6 +186,7 @@ func (s *LinkService) Resolve(ctx context.Context, code string) (*domain.Link, e
 	defer cancel()
 
 	code = strings.TrimSpace(code)
+	logging.SetCacheHit(ctx, false)
 	if link, resolved, err := s.resolveFromCache(ctx, code); resolved {
 		return link, err
 	}
@@ -245,6 +247,7 @@ func (s *LinkService) resolveFromCache(ctx context.Context, code string) (*domai
 		return nil, false, nil
 	}
 	if value == "" {
+		logging.SetCacheHit(ctx, true)
 		return nil, true, ErrLinkNotFound
 	}
 
@@ -253,6 +256,7 @@ func (s *LinkService) resolveFromCache(ctx context.Context, code string) (*domai
 		s.logger.WarnContext(ctx, "invalid cached link payload", slog.String("code", code), slog.Any("error", err))
 		return nil, false, nil
 	}
+	logging.SetCacheHit(ctx, true)
 	if cached.IsDisabled || cached.ExpiresAt != nil && !cached.ExpiresAt.After(time.Now().UTC()) {
 		return nil, true, ErrLinkUnavailable
 	}

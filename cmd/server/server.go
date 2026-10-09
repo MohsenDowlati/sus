@@ -18,10 +18,14 @@ import (
 	cache "github.com/MohsenDowlati/shorts/internal/cache"
 	"github.com/MohsenDowlati/shorts/internal/config"
 	httphandler "github.com/MohsenDowlati/shorts/internal/handler/http"
+	"github.com/MohsenDowlati/shorts/internal/logging"
+	"github.com/MohsenDowlati/shorts/internal/metrics"
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
 	"github.com/MohsenDowlati/shorts/internal/ratelimit"
 	"github.com/MohsenDowlati/shorts/internal/repository"
 	"github.com/MohsenDowlati/shorts/internal/service"
 	"github.com/MohsenDowlati/shorts/internal/urlguard"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Run bootstraps configuration, logging, storage and the HTTP server, then
@@ -35,6 +39,20 @@ func Run() (runErr error) {
 	if err := env.Validate(); err != nil {
 		return fmt.Errorf("invalid environment: %w", err)
 	}
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	tracerProvider, err := telemetry.Init(tracingCtx, "shortener-api")
+	tracingCancel()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tracerProvider.Shutdown(shutdownCtx); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("shutdown tracing: %w", err))
+		}
+	}()
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), env.RedisDialTimeout)
 	app, err := AppWithEnv(startupCtx, env)
@@ -53,6 +71,12 @@ func Run() (runErr error) {
 			logger.Error("dependency shutdown failed", slog.Any("error", err))
 		}
 	}()
+
+	streamMetrics := metrics.NewStreamCollector(app.Redis, env.RedisAnalyticsStream, env.RedisAnalyticsConsumerGroup)
+	if err := prometheus.Register(streamMetrics); err != nil {
+		return fmt.Errorf("register stream metrics: %w", err)
+	}
+	defer prometheus.Unregister(streamMetrics)
 
 	db := app.Mongo.Database(env.DBName)
 
@@ -149,12 +173,12 @@ func newLogger(env *config.Env) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(env.LogLevel)}
 
 	var handler slog.Handler
-	if strings.EqualFold(env.AppEnv, "production") {
+	if strings.EqualFold(strings.TrimSpace(env.AppEnv), "production") {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
-	return slog.New(handler)
+	return slog.New(logging.NewHandler(handler))
 }
 
 func parseLevel(level string) slog.Level {

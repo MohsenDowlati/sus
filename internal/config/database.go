@@ -21,21 +21,21 @@ func NewMongoDatabase(env *Env) mongodb.Client {
 
 	client, err := mongodb.NewClient(mongodbURI)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("initialize MongoDB client: %T", err)
 	}
 
 	err = client.Connect(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("connect MongoDB: %T", err)
 	}
 
 	err = client.Ping(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("ping MongoDB: %T", err)
 	}
 
 	if err = mongodb.EnsureIndexesWithClickRetention(ctx, client.Database(env.DBName), env.ClickEventsRetention()); err != nil {
-		log.Fatalf("ensure indexes: %v", err)
+		log.Fatalf("ensure MongoDB indexes: %T", err)
 	}
 
 	return client

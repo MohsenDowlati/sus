@@ -1,7 +1,9 @@
 package analytics
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,7 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/logging"
 	"github.com/redis/go-redis/v9"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type fakeMessageSource struct {
@@ -153,4 +161,44 @@ func testWorkerConfig() WorkerConfig {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+
+func TestWorkerBatchLogsMatchActiveSpanAndPreserveParentAfterCancellation(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		name := "success"
+		if failure { name = "database failure" }
+		t.Run(name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+			previous := otel.GetTracerProvider()
+			otel.SetTracerProvider(provider)
+			t.Cleanup(func() { otel.SetTracerProvider(previous); _ = provider.Shutdown(context.Background()) })
+			parentCtx, parent := provider.Tracer("test").Start(context.Background(), "test.parent")
+			defer parent.End()
+			parentCtx, cancel := context.WithCancel(parentCtx)
+			cancel()
+			var logs bytes.Buffer
+			logger := slog.New(logging.NewHandler(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level:slog.LevelDebug})))
+			source := &fakeMessageSource{}
+			processor := &fakeBatchProcessor{}
+			if failure { processor.err = mongo.CommandError{Code:13, Message:"unauthorized"} }
+			worker := NewWorker(source, processor, testWorkerConfig(), logger)
+			if got := worker.handleBatch(parentCtx, []redis.XMessage{{ID:"1-0"}}); got == failure { t.Fatal("unexpected batch outcome") }
+			var record map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil { t.Fatalf("invalid JSON log: %v", err) }
+			spans := exporter.GetSpans()
+			if len(spans) != 1 || spans[0].Name != "analytics.process_batch" { t.Fatal("missing processing span") }
+			span := spans[0]
+			if record["trace_id"] != span.SpanContext.TraceID().String() || record["span_id"] != span.SpanContext.SpanID().String() || !span.Parent.Equal(parent.SpanContext()) {
+				t.Fatal("batch log or span lost its parent trace context")
+			}
+			if failure {
+				if span.Status.Code != codes.Error || len(span.Events) == 0 { t.Fatal("failed batch missing error status or event") }
+				for _, attr := range span.Attributes { if string(attr.Key) == "db.response.status_code" && attr.Value.AsString() == "13" { return } }
+				t.Fatal("MongoDB failure code missing")
+			}
+			if _, ok := record["duration_ms"].(float64); !ok { t.Fatal("batch duration must be numeric milliseconds") }
+		})
+	}
 }

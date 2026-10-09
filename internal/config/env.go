@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/netip"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/logging"
 	"github.com/joho/godotenv"
 )
 
@@ -18,9 +20,10 @@ import (
 // (and, outside production, from a local .env file). Field groups: app/server,
 // MongoDB, Redis, and JWT settings.
 type Env struct {
-	AppEnv        string
-	ServerAddress string
-	LogLevel      string
+	AppEnv               string
+	ServerAddress        string
+	WorkerMetricsAddress string
+	LogLevel             string
 
 	ContextTimeout    int
 	ShortenerDomains  []string
@@ -180,11 +183,15 @@ func (e *Env) ValidateWorker() error {
 
 func NewEnv() *Env {
 	loadLocalEnv()
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		slog.SetDefault(slog.New(logging.NewHandler(slog.NewJSONHandler(os.Stdout, nil))))
+	}
 
 	env := &Env{
-		AppEnv:        getEnv("APP_ENV", "development"),
-		ServerAddress: getEnv("SERVER_ADDRESS", ":8080"),
-		LogLevel:      getEnv("LOG_LEVEL", "info"),
+		AppEnv:               getEnv("APP_ENV", "development"),
+		ServerAddress:        getEnv("SERVER_ADDRESS", ":8080"),
+		WorkerMetricsAddress: getEnv("WORKER_METRICS_ADDRESS", ":9091"),
+		LogLevel:             getEnv("LOG_LEVEL", "info"),
 
 		ContextTimeout:    getEnvAsInt("CONTEXT_TIMEOUT", 10),
 		ShortenerDomains:  getEnvAsList("SHORTENER_DOMAINS", []string{"localhost"}),
@@ -265,7 +272,7 @@ func loadLocalEnv() {
 	}
 	if err := godotenv.Load(); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("warning: could not load .env file: %v", err)
+			log.Printf("warning: could not load .env file")
 		}
 	}
 }
@@ -293,7 +300,7 @@ func getEnvAsInt(key string, defaultVal int) int {
 	}
 	value, err := strconv.Atoi(strings.TrimSpace(valueStr))
 	if err != nil {
-		log.Fatalf("invalid value for %s: %v", key, err)
+		log.Fatalf("invalid integer value for %s", key)
 	}
 	return value
 }
@@ -305,7 +312,7 @@ func getEnvAsDuration(key string, defaultVal time.Duration) time.Duration {
 	}
 	duration, err := time.ParseDuration(strings.TrimSpace(value))
 	if err != nil {
-		log.Fatalf("invalid duration for %s: %v", key, err)
+		log.Fatalf("invalid duration for %s", key)
 	}
 	return duration
 }

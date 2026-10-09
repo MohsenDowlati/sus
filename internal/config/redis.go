@@ -4,11 +4,18 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 )
 
 func NewRedisClient(ctx context.Context, env *Env) (*redis.Client, error) {
 	client := redis.NewClient(redisOptions(env))
+	if err := redisotel.InstrumentTracing(client, redisotel.WithDBStatement(true)); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("instrument Redis tracing: %w", err)
+	}
+	client.AddHook(telemetry.RedisErrorHook{})
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("ping Redis at %s: %w", env.RedisAddr, err)

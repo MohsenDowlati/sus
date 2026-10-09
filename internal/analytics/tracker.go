@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MohsenDowlati/shorts/internal/ratelimit"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const publishTimeout = 2 * time.Second
@@ -26,12 +27,19 @@ type Publisher interface {
 	Publish(context.Context, ClickEvent) error
 }
 
+// queuedClick retains trace identity without retaining the request or its
+// canceled context while publication happens in the background.
+type queuedClick struct {
+	event       ClickEvent
+	spanContext trace.SpanContext
+}
+
 type Tracker struct {
 	publisher Publisher
 	clientIPs *ratelimit.ClientIPResolver
 	salt      string
 	logger    *slog.Logger
-	queue     chan ClickEvent
+	queue     chan queuedClick
 	closeOnce sync.Once
 	waitGroup sync.WaitGroup
 }
@@ -45,7 +53,7 @@ func NewTracker(publisher Publisher, clientIPs *ratelimit.ClientIPResolver, salt
 		clientIPs: clientIPs,
 		salt:      salt,
 		logger:    logger.With(slog.String("component", "click_analytics")),
-		queue:     make(chan ClickEvent, queueSize),
+		queue:     make(chan queuedClick, queueSize),
 	}
 	tracker.waitGroup.Add(1)
 	go tracker.run()
@@ -61,7 +69,7 @@ func (tracker *Tracker) Track(r *http.Request, code string) {
 		Timestamp: time.Now().UTC(),
 	}
 	select {
-	case tracker.queue <- event:
+	case tracker.queue <- queuedClick{event: event, spanContext: trace.SpanContextFromContext(r.Context())}:
 	default:
 		tracker.logger.WarnContext(r.Context(), "click analytics queue full; dropping event")
 	}
@@ -86,12 +94,13 @@ func (tracker *Tracker) Close(ctx context.Context) error {
 
 func (tracker *Tracker) run() {
 	defer tracker.waitGroup.Done()
-	for event := range tracker.queue {
-		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
-		err := tracker.publisher.Publish(ctx, event)
+	for queued := range tracker.queue {
+		parent := trace.ContextWithSpanContext(context.Background(), queued.spanContext)
+		ctx, cancel := context.WithTimeout(parent, publishTimeout)
+		err := tracker.publisher.Publish(ctx, queued.event)
 		cancel()
 		if err != nil {
-			tracker.logger.Error("failed to publish click analytics event", slog.Any("error", err))
+			tracker.logger.ErrorContext(ctx, "failed to publish click analytics event", slog.Any("error", err))
 		}
 	}
 }

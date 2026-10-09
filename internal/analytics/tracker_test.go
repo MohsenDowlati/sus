@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MohsenDowlati/shorts/internal/ratelimit"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type channelPublisher struct {
@@ -134,5 +135,43 @@ func closeTracker(t *testing.T, tracker *Tracker) {
 	defer cancel()
 	if err := tracker.Close(ctx); err != nil {
 		t.Fatalf("Tracker.Close() error = %v", err)
+	}
+}
+
+type tracePublisher struct {
+	contexts chan trace.SpanContext
+	errors   chan error
+}
+
+func (publisher *tracePublisher) Publish(ctx context.Context, _ ClickEvent) error {
+	publisher.contexts <- trace.SpanContextFromContext(ctx)
+	publisher.errors <- ctx.Err()
+	return nil
+}
+
+func TestTrackerPreservesTraceContextAfterRequestCancellation(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled,
+	})
+	requestCtx, cancel := context.WithCancel(trace.ContextWithSpanContext(context.Background(), parent))
+	cancel()
+	publisher := &tracePublisher{contexts: make(chan trace.SpanContext, 1), errors: make(chan error, 1)}
+	clientIPs, _ := ratelimit.NewClientIPResolver(nil)
+	tracker := NewTracker(publisher, clientIPs, "analytics-test-salt-with-at-least-32-characters", slog.Default(), 1)
+	defer closeTracker(t, tracker)
+	request := httptest.NewRequest("GET", "/abc123", nil).WithContext(requestCtx)
+	tracker.Track(request, "abc123")
+	select {
+	case got := <-publisher.contexts:
+		if !got.Equal(parent) {
+			t.Fatal("queued publication lost the request trace context")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for publication")
+	}
+	if err := <-publisher.errors; err != nil {
+		t.Fatalf("publication inherited canceled request: %v", err)
 	}
 }

@@ -19,3 +19,9 @@ scrape_configs:
     static_configs:
       - targets:
           - localhost:9090
+  - job_name: shortener
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+  - job_name: shortener-worker
+    static_configs:
+      - targets: ["host.docker.internal:9091"]

@@ -6,7 +6,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/MohsenDowlati/shorts/internal/telemetry"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type WorkerConfig struct {
@@ -41,25 +45,31 @@ func NewWorker(source StreamMessageSource, processor BatchProcessor, config Work
 }
 
 func (worker *Worker) Run(ctx context.Context) error {
-	if err := worker.retry(ctx, func(attemptCtx context.Context) error {
+	tracer := otel.Tracer("shortener/analytics")
+	startupCtx, startupSpan := tracer.Start(ctx, "analytics.worker.start")
+	if err := worker.retry(startupCtx, func(attemptCtx context.Context) error {
 		return worker.source.EnsureGroup(attemptCtx, worker.config.Stream, worker.config.ConsumerGroup)
 	}); err != nil {
+		telemetry.RecordError(startupCtx, err)
+		startupSpan.End()
 		return fmt.Errorf("ensure consumer group: %w", err)
 	}
 
-	worker.logger.Info("analytics worker started",
+	worker.logger.InfoContext(startupCtx, "analytics worker started",
 		slog.String("stream", worker.config.Stream),
 		slog.String("group", worker.config.ConsumerGroup),
 		slog.String("consumer", worker.config.ConsumerName),
 		slog.Int64("batch_size", worker.config.BatchSize),
 	)
 
+	startupSpan.End()
 	worker.recoverOwnedPending(ctx)
 	claimStart := "0-0"
 
 	for ctx.Err() == nil {
+		claimCtx, claimSpan := tracer.Start(ctx, "analytics.claim")
 		claimed, next, err := worker.source.Claim(
-			ctx,
+			claimCtx,
 			worker.config.Stream,
 			worker.config.ConsumerGroup,
 			worker.config.ConsumerName,
@@ -67,11 +77,13 @@ func (worker *Worker) Run(ctx context.Context) error {
 			claimStart,
 			worker.config.BatchSize,
 		)
+		telemetry.RecordError(claimCtx, err)
+		claimSpan.End()
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			worker.logger.Error("failed to claim pending messages", slog.Any("error", err))
+			worker.logger.ErrorContext(claimCtx, "failed to claim pending messages", slog.Any("error", err))
 			if !worker.wait(ctx, worker.config.RetryBackoff) {
 				break
 			}
@@ -81,7 +93,7 @@ func (worker *Worker) Run(ctx context.Context) error {
 				claimStart = "0-0"
 			}
 			if len(claimed) > 0 {
-				worker.handleBatch(claimed)
+				worker.handleBatch(claimCtx, claimed)
 				continue
 			}
 		}
@@ -89,8 +101,9 @@ func (worker *Worker) Run(ctx context.Context) error {
 			break
 		}
 
+		readCtx, readSpan := tracer.Start(ctx, "analytics.read")
 		messages, err := worker.source.Read(
-			ctx,
+			readCtx,
 			worker.config.Stream,
 			worker.config.ConsumerGroup,
 			worker.config.ConsumerName,
@@ -98,32 +111,37 @@ func (worker *Worker) Run(ctx context.Context) error {
 			worker.config.BatchSize,
 			worker.config.PollTimeout,
 		)
+		telemetry.RecordError(readCtx, err)
+		readSpan.End()
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			worker.logger.Error("failed to read click events", slog.Any("error", err))
+			worker.logger.ErrorContext(readCtx, "failed to read click events", slog.Any("error", err))
 			if !worker.wait(ctx, worker.config.RetryBackoff) {
 				break
 			}
 			continue
 		}
 		if len(messages) > 0 {
-			worker.handleBatch(messages)
+			worker.handleBatch(readCtx, messages)
 		}
 		if ctx.Err() != nil {
 			break
 		}
 	}
 
-	worker.logger.Info("analytics worker stopped")
+	stopCtx, stopSpan := tracer.Start(context.WithoutCancel(ctx), "analytics.worker.stop")
+	worker.logger.InfoContext(stopCtx, "analytics worker stopped")
+	stopSpan.End()
 	return nil
 }
 
 func (worker *Worker) recoverOwnedPending(ctx context.Context) {
 	for ctx.Err() == nil {
+		readCtx, readSpan := otel.Tracer("shortener/analytics").Start(ctx, "analytics.read_pending")
 		messages, err := worker.source.Read(
-			ctx,
+			readCtx,
 			worker.config.Stream,
 			worker.config.ConsumerGroup,
 			worker.config.ConsumerName,
@@ -131,27 +149,35 @@ func (worker *Worker) recoverOwnedPending(ctx context.Context) {
 			worker.config.BatchSize,
 			-1,
 		)
+		telemetry.RecordError(readCtx, err)
+		readSpan.End()
 		if err != nil {
-			worker.logger.Error("failed to read consumer pending messages", slog.Any("error", err))
+			worker.logger.ErrorContext(readCtx, "failed to read consumer pending messages", slog.Any("error", err))
 			return
 		}
 		if len(messages) == 0 {
 			return
 		}
-		if !worker.handleBatch(messages) {
+		if !worker.handleBatch(readCtx, messages) {
 			return
 		}
 	}
 }
 
-func (worker *Worker) handleBatch(messages []redis.XMessage) bool {
-	processCtx, cancel := context.WithTimeout(context.Background(), worker.config.ProcessingTimeout)
+func (worker *Worker) handleBatch(parent context.Context, messages []redis.XMessage) bool {
+	processCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), worker.config.ProcessingTimeout)
 	defer cancel()
+	processCtx, span := otel.Tracer("shortener/analytics").Start(processCtx, "analytics.process_batch",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.Int("messaging.batch.message_count", len(messages))))
+	defer span.End()
+	start := time.Now()
 
 	if err := worker.retry(processCtx, func(attemptCtx context.Context) error {
 		return worker.processor.Process(attemptCtx, messages)
 	}); err != nil {
-		worker.logger.Error("failed to process click event batch",
+		telemetry.RecordError(processCtx, err)
+		worker.logger.ErrorContext(processCtx, "failed to process click event batch",
 			slog.Int("count", len(messages)),
 			slog.Any("error", err),
 		)
@@ -165,14 +191,16 @@ func (worker *Worker) handleBatch(messages []redis.XMessage) bool {
 	if err := worker.retry(processCtx, func(attemptCtx context.Context) error {
 		return worker.source.Ack(attemptCtx, worker.config.Stream, worker.config.ConsumerGroup, ids...)
 	}); err != nil {
-		worker.logger.Error("failed to acknowledge click event batch",
+		telemetry.RecordError(processCtx, err)
+		worker.logger.ErrorContext(processCtx, "failed to acknowledge click event batch",
 			slog.Int("count", len(messages)),
 			slog.Any("error", err),
 		)
 		return false
 	}
 
-	worker.logger.Debug("processed click event batch", slog.Int("count", len(messages)))
+	worker.logger.DebugContext(processCtx, "processed click event batch", slog.Int("count", len(messages)),
+		slog.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)))
 	return true
 }
 
