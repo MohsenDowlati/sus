@@ -38,6 +38,7 @@ func TestValidateSlug_DisallowedCharacters(t *testing.T) {
 		"email@example",
 		"bang!slug",
 		"path/slug",
+		"/..",
 	}
 
 	for _, slug := range tests {
